@@ -1,0 +1,852 @@
+---
+title: "Amazon Employee Retention Analysis"
+author: "Tsung-Han Tsai"
+date: "2024-12-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# **Culture Matters: The key factors Amazon employees value**
+
+## **Introduction & Motivation**
+
+According to a Forbes report in October 2022, Amazon has a high attrition rate that costs the company $8 Billion annually. For any company to be successful, lowering unnecessary costs and retain their talent is crucial. Lowering high attrition rate is a great way to save money and keep the employees. And in order to do so, Amazon must identify and satisfy employees needs. This is what the project aim to do.
+
+## **Problem Indentification**
+
+So here comes the question, **which area should be the top priority for Amazon to make improvements?**. This project will utilize Linear Regression and Text Analysis to identify employees concern and make suggestions to Amazon for improvement.
+
+## **Data Collection**
+
+The dataset is the Amazon job reviews (USA India) 2008-2020 from Kaggle.
+
+This dataset comprise of employees' working-related data, ratings, status and their text review on the corresponding job.
+
+In this dataset, we have **29,494** observations and **23** variables(With **1** column that named X as an Index column).
+
+The overview of data:
+
+Job-relating variables:
+
+- ID number: The unique id number
+
+- Year: The year on which the review is given
+
+- Location: The location of office at which the review is given
+
+- Position: The designation of employee in the company
+
+- Current employee Whether the employee is currently on job
+
+- Former employee: Whether the employee has left the company
+
+- Timeline
+
+Rating/Review-related variables:
+
+- Comment for company: Summary of review for Amazon (Text data)
+
+- Overall rating: The overall rating given by employee to the company out of 5
+
+- Work/Life Balance: Rating given by work/life balance to the company out of 5
+
+- Culture & Values: Rating given by employee on culture and values in the company out of 5
+
+- Diversity & Inclusion: Rating given by employee on Diversity and inclusion in the company out of 5
+
+- Career Opportunities: Rating given by employee on Career Opportunity in the company out of 5
+
+- Compensation and Benefits: Rating given by employee on Compensation and Benefits in the company out of 5
+
+- Senior Management: Rating given by employee on Senior Management in the company out of 5
+
+- CEO Approval
+
+- Recommended: Whether the employee recommends the job
+
+- cons: Disadvantage of the job (Text data)
+
+- pros: Advantage of the job (Text data)
+
+- advice to Management
+
+- review_url: The link to the review
+
+## **Data Preparation**
+```{r, warning=FALSE}
+# Loading the packages
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(gridExtra)
+library(caret)
+library(corrplot)
+library(stringdist)  
+library(tidytext)
+library(textclean)
+library(tm)
+library(SnowballC)
+library(textstem)
+library(stringr)
+library(hunspell)
+library(tidyr)
+library(wordcloud)
+library(syuzhet)
+library(topicmodels)
+```
+
+```{r}
+# Loading the dataset
+amazon <- read.csv("Amazon_Job_Reviews.csv")
+```
+
+#### **Data labeling and Selecting**
+
+In order to make the analysis close to reality, I only selected the reviews within 2020, which are the latest review in the dataset.
+
+```{r}
+# To make the analysis represent closely to the current status, we only select the 2020 reviews to analyze
+amazon_2020 <- amazon |>
+  filter(as.integer(Year) > 2019)
+```
+
+```{r}
+head(amazon_2020)
+```
+
+There is a **Location** variable that represents the city where the employee works, to simplify the analysis process, I mapped the cities to their corresponding countries, which is either the USA or India.
+```{r}
+# Processing the Location, mapping locations to Country. Either in USA or India
+# List of valid US state codes
+us_state_codes <- c("AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DC", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS", 
+                    "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC", 
+                    "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY")
+
+# Function to map location to country
+map_country <- function(location) {
+  # Check if the location contains a comma
+  if (grepl(",", location)) {
+    # Split by comma to get city and state
+    parts <- strsplit(location, ",")[[1]]
+    city <- trimws(parts[1])
+    state <- trimws(parts[2])
+    
+    # Check if the state is in the list of valid US state codes
+    if (state %in% us_state_codes) {
+      return("USA")
+    } else {
+      return("India")
+    }
+  } else {
+    # If there's no comma, label as India
+    return("India")
+  }
+}
+
+# Apply the function to the 'Location' column and create a new 'Country' column
+amazon_2020$Country <- sapply(amazon_2020$Location, map_country)
+```
+
+```{r}
+table(amazon_2020$Country)
+```
+
+Based on the distribution above we can see that the majority of the reviews in 2020 comes from United States of America.
+
+Moreover, there are multiple job positions in **position** column, to be able to identify patterns and differences in the analysis, I decided to map the position to corresponding department based on the position's function. Thus creating a **department** column.
+```{r}
+# Create a new column that represent the employees department based on their Position
+# Load necessary libraries
+library(dplyr)
+
+# Example: If your data is in a CSV file
+# amazon_positions <- read.csv("unique_amazon_positions_2020.csv", stringsAsFactors = FALSE)
+
+# Function to categorize positions into departments
+categorize_position <- function(position) {
+  position <- tolower(trimws(position)) # Convert to lowercase and remove whitespace
+  
+  if (grepl("warehouse|operations|logistics|fulfillment|delivery", position)) {
+    return("Operations")
+  } else if (grepl("customer service|support", position)) {
+    return("Customer Service")
+  } else if (grepl("manager|director|lead|program|project", position)) {
+    return("Corporate/Management")
+  } else if (grepl("software|data|engineer|developer|scientist|technology|tech|it|analyst", position)) {
+    return("Technology")
+  } else {
+    return("Other")
+  }
+}
+
+# Apply the categorization function to the dataset
+amazon_2020 <- amazon_2020 %>%
+  mutate(Department = sapply(Position, categorize_position))
+
+# See the distribution
+table(amazon_2020$Department)
+```
+
+As we can see, there are a lot of employees working in functions like **Management**, **Operations** and **Technology** which reflects my perception about Amazon, an multinational technology corporation.
+
+Since I will conduct Linear Regression and Text Analysis in this project, I will separate the project into 2 sections, **Linear Regression Analysis** and **Text Analysis**
+
+## **Linear Regression Analysis**
+
+I want to analyze the impact of different rating categories on the overall rating to identify which area is the most important factor that Amazon employees value, and require prioritized improvement by the company.
+
+Therefore, I included **ID.number**, **Overall.ratting**, **Work.Life.Balance**, **Culture&Values**, **Diversity&Inclusion**, **Career Opportunities**, **Compensation and Benefits** and **Senior Management** in the dataset and detecting and handling duplicates and missing values.
+
+### **Data Preparation: Processing**
+
+
+1. Separating the dataset 
+```{r}
+# Separating the dataset
+amazon_reg_data <- amazon_2020[, c(1, 6:12, 24:25)]
+
+# Printing the size of the dataset
+dim(amazon_reg_data)
+
+# There are 10304 rows of reviews with 10 variables
+```
+
+2. Detecting & Handling Duplicate Rows
+```{r}
+# Detecting and remove duplicate values
+amazon_reg_data <- amazon_reg_data %>%
+  distinct()
+
+# Printing the size of the dataset
+dim(amazon_reg_data)
+
+# There is no duplicate values
+```
+
+3. Detecting and Handling Missing Values
+```{r}
+# Detecting missing values
+missing_summary_reg <- data.frame(
+  Column = names(amazon_reg_data),
+  MissingValues = colSums(is.na(amazon_reg_data)),
+  MissingPercentage = colMeans(is.na(amazon_reg_data)) * 100
+)
+missing_summary_reg
+```
+There are some missing values in certain columns, for the integrity of the Linear Regression Analysis, we will delete all missing values.
+
+```{r}
+# Deleting the missing values
+amazon_reg_data <- amazon_reg_data %>%
+  drop_na()
+dim(amazon_reg_data)
+
+```
+
+Due to substantial missing values in some columns, there are only 3734 reviews suitable for Linear Regression Analysis.
+
+
+### **Data Preparation: EDA**
+
+```{r}
+# Continuous Variable: Ratings
+reg_name_con <- c("Overall Rating", "Work-Life Balance", "Culture & Values", "Diversity & Inclusion", 
+                  "Career Opportunities", "Compensation & Benefits", "Senior Management")
+
+for(i in 1:ncol(amazon_reg_data[, 2:8])) {
+  # Plot histogram for each variable
+  hist_data <- amazon_reg_data[, 2:8][[i]]
+  hist_res <- hist(hist_data, 
+                   main = paste("Histogram of the rating of", reg_name_con[i]), 
+                   xlab = reg_name_con[i], 
+                   plot = FALSE)  # 不立即繪製，只計算數據
+  
+  # Calculate the positions and frequencies of the bars
+  bar_positions <- hist_res$mids
+  freq <- hist_res$counts
+  
+  # Plot the histogram
+  hist(hist_data, 
+       main = paste("Histogram of the rating of", reg_name_con[i]), 
+       xlab = reg_name_con[i], 
+       col = "lightblue")
+  
+  # Add frequency numbers above the bars
+  text(x = bar_positions, y = freq, labels = freq, pos = 1, cex = 0.85, col = "darkblue")
+}
+```
+
+**Interpretation**:
+
+According to the ratings' distribution, we can see that while some ratings are poor, most of the ratings are **between 3 to 5**, which is a decent rating. But we need to keep and eye out on the rating of **Work-Life Balance** and **Senior Management**, as there frequency of rating score 1 or 2 are higher than other categories.
+
+```{r}
+# Categorical Variables: Country and Departments
+for (i in 1:ncol(amazon_reg_data[, 9:10])) {
+  # Calculate the frequency of each unique value
+  freq <- table(amazon_reg_data[, 9:10][[i]])
+  
+  # Plot the bar graph
+  bar_positions <- barplot(freq, 
+                           main = paste("Distribution of", names(amazon_reg_data)[i + 8]), 
+                           xlab = names(amazon_reg_data)[i + 8], 
+                           ylab = "Frequency", 
+                           col = "lightblue",
+                           las = 1,     # Rotate y-axis labels to horizontal
+                           cex.names = 0.65)
+  
+  text_positions <- ifelse(freq > max(freq) * 0.8, freq - max(freq) * 0.1, freq + max(freq) * 0.1)
+  # Add the frequency numbers above the bars
+  text(x = bar_positions, y = text_positions, labels = freq, pos = 3, cex = 0.85, col = "darkblue")
+    
+}
+```
+
+**Interpretation**: 
+
+In the bar-plot above, we can see **the majority of the reviews are from US employees**. Roughly **2.7 times** the reviews of India Employees. As for department, most of the employees are in **Operations** and **Technology**. Be aware that the **others** contain positions such as Security Guard, Problem solver or even Interns, so I will not emphasize on elaborating or analyzing **Other** departments.
+
+
+Rating Distribution between Country & Department
+
+
+
+**Country wise**
+```{r}
+# 需要比較的 Rating 變數
+ratings <- c("Overall.ratting", "Work.Life.Balance", "Culture...Values", "Diversity...Inclusion", 
+             "Career.Opportunities", "Compensation.and.Benefits", "Senior.Management")
+
+# 繪製每個 Rating 基於國家的分佈
+for (rating in ratings) {
+  p_country <- ggplot(amazon_reg_data, aes(x = Country, y = .data[[rating]], fill = Country)) +
+    geom_boxplot(outlier.colour = "red", outlier.shape = 16, outlier.size = 2) +
+    labs(title = paste("Distribution of", rating, "by Country"),
+         x = "Country", y = rating) +
+    theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5)) # 標題置中
+  print(p_country)
+}
+
+```
+
+Interpretation: According to the box-plot above we can see that **overall employees in India rated higher in almost each categories except Career Opportunities and Compensation & Benefits**. Since there seems to be some difference in ratings among countries. We will dive deep into Linear Regression Analysis between countries.
+
+
+
+**Department wise**
+```{r}
+# Drawing box-plot based on departments
+for (rating in ratings) {
+  p_department <- ggplot(amazon_reg_data, aes(x = Department, y = .data[[rating]], fill = Department)) +
+    geom_boxplot(outlier.colour = "red", outlier.shape = 16, outlier.size = 2) +
+    labs(title = paste("Distribution of", rating, "by Department"),
+         x = "Department", y = rating) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    theme(plot.title = element_text(hjust = 0.5),
+          legend.position = "none") 
+  print(p_department)
+}
+```
+
+According to the department based box-plot, we can see that **there are differences among the departments**. As a consequence, we will also dive deep into departments during the linear regression analysis.
+
+
+
+**Correlation**
+```{r}
+# Load required packages
+library(ggplot2)
+library(reshape2)
+
+# Calculate correlations excluding categorical variables
+cor_matrix_gen <- cor(subset(amazon_reg_data, select = -c(X, Overall.ratting, Country, Department)))
+# Melt the matrix for ggplot2
+melted_cor <- melt(cor_matrix_gen)
+
+# Plot heatmap
+ggplot(data = melted_cor, aes(x=Var1, y=Var2, fill=value)) +
+  geom_tile() +
+  geom_text(aes(label=round(value, 2))) +
+  scale_fill_gradient2(low="blue", high="red", mid="white", midpoint=0) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # 調整角度和對齊方式
+  labs(title = "Correlation Matrix: In General", x = NULL, y = NULL)
+```
+Interpretation: All the independent variables are not highly correlated, so **we can add them into the linear regression model without having to deal with multicollinearity**.
+
+But do notice that the correlation between **Culture&Values** and **Senior Management** is **0.76**, so during the interpretation of the project results, there might be results that combined these 2 characteristics together.
+
+Conclusion: 
+According to above Exploratory Data Analysis, we can see that **there is a difference in ratings among countries and departments**. Therefore, I will conduct linear regression **based on countries and departments** to find which areas affect the overall ratings the most**.
+
+
+### **Data Analysis**
+
+First, I want to create a **general model** that reflects an overview of the coefficient and significance.
+
+```{r}
+# Creating a general model
+overall_model <- lm(Overall.ratting ~ Work.Life.Balance + Culture...Values + Diversity...Inclusion + Career.Opportunities + Compensation.and.Benefits + Senior.Management, 
+              data = amazon_reg_data)
+summary(overall_model)
+```
+
+According to the general model, **under the significance level of 0.05**, **all of the ratings from different aspects in jobs are significant.**
+
+But based on the result of Exploratory Data Analysis, we still **need to dive deep into countries and departments** to identify which areas affect the overall ratings the most.
+
+Let's see how the regression results among countries look like:
+
+```{r}
+# Getting unique country values
+countries <- unique(amazon_reg_data$Country)
+
+# 按國家進行線性回歸
+models_by_country <- list() 
+models_countries <- list()
+
+for (country in countries) {
+  
+  country_data <- amazon_reg_data[amazon_reg_data$Country == country, ]
+  
+  # Conducting Linear Regression 
+  model_country <- lm(Overall.ratting ~ Work.Life.Balance + Culture...Values + Diversity...Inclusion + Career.Opportunities + Compensation.and.Benefits + Senior.Management, 
+              data = country_data)
+  
+  
+  country_summary <- summary(model_country)
+  
+  # Storing Coefficients
+  country_coeffs <- data.frame(
+    Country = country,
+    Variable = rownames(country_summary$coefficients),
+    Estimate = country_summary$coefficients[, 1],
+    Std.Error = country_summary$coefficients[, 2],
+    t.value = country_summary$coefficients[, 3],
+    P.Value = country_summary$coefficients[, 4]
+  )
+  
+  models_by_country[[country]] <- country_coeffs
+  models_countries[[country]] <- model_country
+}
+
+
+country_results <- bind_rows(models_by_country)
+
+
+model_1 <- models_countries[["USA"]]  
+model_2 <- models_countries[["India"]]  
+
+# Using stargazer to compare results
+library(stargazer)
+stargazer(model_1, model_2, type = "text", 
+          dep.var.labels = "Overall Rating",
+          column.labels = c("USA", "India"),
+          out = "model_comparison.html")
+```
+We can see that regardless of country, the variables in USA and India model **are all significant** under 0.05 confidence level.
+
+Let's check the departments.
+```{r}
+library(stargazer)
+
+departments <- unique(amazon_reg_data$Department)
+
+
+models_by_department <- list()  
+models_department <- list()
+
+for (department in departments) {
+  
+  department_data <- amazon_reg_data[amazon_reg_data$Department == department, ]
+  
+  
+  model_dep <- lm(Overall.ratting ~ Work.Life.Balance + Culture...Values + Diversity...Inclusion + Career.Opportunities + Compensation.and.Benefits + Senior.Management, 
+              data = department_data)
+  
+  
+  dep_summary <- summary(model_dep)
+  
+  
+  dep_coeffs <- data.frame(
+    Department = department,
+    Variable = rownames(dep_summary$coefficients),
+    Estimate = dep_summary$coefficients[, 1],
+    Std.Error = dep_summary$coefficients[, 2],
+    t.value = dep_summary$coefficients[, 3],
+    P.Value = dep_summary$coefficients[, 4]
+  )
+  
+  models_by_department[[department]] <- dep_coeffs
+  models_department[[department]] <- model_dep
+}
+
+
+department_results <- bind_rows(models_by_department)
+
+
+model_d1 <- models_department[["Corporate/Management"]]
+model_d2 <- models_department[["Customer Service"]]  
+model_d3 <- models_department[["Operations"]]
+model_d4 <- models_department[["Other"]]
+model_d5 <- models_department[["Technology"]]
+
+
+stargazer(model_d1, model_d2, model_d3, model_d4, model_d5, type = "text", 
+          dep.var.labels = "Overall Rating",
+          column.labels = c("Corporate/Management", "Customer Service" , "Operations", "Other" , "Technology"),
+          out = "model_comparison.html")
+
+```
+According to the result, **almost all of the variables are significant** to **Overall Rating(Target Variable)** under 0.05 significance level.
+
+I combine the results to make comparison much easier.
+```{r}
+# Combining coutries' and departments' results
+combined_results <- bind_rows(country_results %>% mutate(Group = "Country"),
+                              department_results %>% mutate(Group = "Department"))
+
+# Visualizing the p-value
+ggplot(combined_results, aes(x = Variable, y = P.Value, color = Group, fill = Group)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7, alpha = 0.5) +
+  facet_wrap(~ Group, scales = "free_x") +
+  geom_hline(yintercept = 0.05, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "P-Values of Linear Regression by Country and Department",
+       x = "Predictor Variables", y = "P-Value") +
+  scale_fill_manual(values = c("skyblue", "lightgreen")) +
+  scale_color_manual(values = c("darkblue", "darkgreen"))
+```
+
+Based on the **p-value visualization chart**, under the **significance level of 0.05**, we can see that for **countries**, whether the USA or India, **all of the aspects of job rating** are going to affect the overall rating. 
+
+As for the **Department**, aside from the **Diversity & Inclusion** is not that significant for Customer Service department, **all the other aspect of job ratings** do matter in the overall rating.
+
+Thus, we will proceed on assessing the effect of each aspect of job ratings based on the **size of their coefficient**.
+```{r}
+# Visualizing coefficients
+ggplot(combined_results, aes(x = reorder(Variable, Estimate), y = Estimate, color = Group, fill = Group)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7, alpha = 0.6) +
+  facet_wrap(~ Group, scales = "free_x") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Coefficients of Linear Regression by Country and Department",
+       x = "Predictor Variables", y = "Estimate Coefficient") +
+  scale_fill_manual(values = c("skyblue", "lightgreen")) +
+  scale_color_manual(values = c("darkblue", "darkgreen"))
+``` 
+
+Based on coefficient visualization, unlike what we saw at the EDA, where countries and departments have differences, we can see that overall the aspects of the job that employees emphasize are basically the same. As for the size of the effect, **Culture & Values** is the aspect that affects the overall ratings the most. Then there are **Career Opportunities, Work-Life Balance, Senior Management, Compensation & Benefits**, while the **Diversity&Inclusion** being the last.
+
+### **Results**
+
+As a result, we can identify **Culture&Values** is the key factor that Amazon employees value. In order to lower high attrition rate, Amazon should prioritize on improving the **Culture&Values**.
+I will conduct Text Analysis in the following to extract specific details that Amazon can work on within **Culture&Values** factor.
+
+
+## **Text Analysis**
+
+
+### **Data Preparation: Preprocessing**
+
+For text analysis, I included **ID.number**, **cons**, **pros**, **advice to Management**, **Country** and **Department** in the dataset and detecting and handling duplicates and missing values.
+
+1. Separating the dataset 
+```{r}
+# Separating the dataset
+amazon_text_data <- amazon_2020[, c(2, 7:12, 19, 20, 21, 24, 25)]
+
+# Printing the size of the dataset
+dim(amazon_text_data)
+
+# There are 10304 rows of reviews with 6 variables
+```
+
+2. Detecting & Handling Duplicate Rows
+```{r}
+# Detecting and remove duplicate values
+amazon_text_data <- amazon_text_data %>%
+  distinct()
+
+# Printing the size of the dataset
+dim(amazon_text_data)
+
+# There is no duplicate values
+```
+
+3. Detecting and Handling Missing Values
+```{r}
+# Detecting missing values
+missing_summary_text <- data.frame(
+  Column = names(amazon_text_data),
+  MissingValues = colSums(is.na(amazon_text_data)),
+  MissingPercentage = colMeans(is.na(amazon_text_data)) * 100
+)
+missing_summary_text
+```
+
+
+Although there are some blank space in the pros, cons and advice to management, but we will deal with that later when conducting the text analysis.
+
+### Preprocessing
+
+According to the **Linear Regression Analysis Result**, Amazon should improve their **Culture&Values**.
+But what exactly should they improve? I will use text analysis to find out. By **analyzing reviews that are positive and negative sentiment**, I will be able to extract **what exactly did Amazon do well on and what are the specifics Amazon should make a change**.
+
+First, I started by selecting **pros** column from those employees that **rate Culture&Values highly(ratings on 4 or 5)**. These are the **positive reviews regarding Culture&Values**.
+
+
+```{r}
+# Positive Culture Values dataset
+culture_positive <- amazon_text_data |>
+  filter(Culture...Values == 4 | Culture...Values == 5) |>
+  select(ID.number, pros) |>
+  mutate(Index = row_number())
+```
+
+
+On the other hand, I select **cons** column from those employees that **rate Culture&Values poor(ratings on 1 or 2)**. These are the **negative reviews regarding Culture&Values**.
+
+
+```{r}
+# Negative Culture Values dataset
+culture_negative <- amazon_text_data |>
+  filter(Culture...Values == 1 | Culture...Values == 2) |>
+  select(ID.number, cons) |>
+  mutate(Index = row_number())
+```
+
+
+Transfer both positive and negative reviews to lowercase and remove numbers and punctuation.
+
+```{r}
+# Culture Positive
+culture_positive$pros <- tolower(culture_positive$pros)
+culture_positive$pros <- gsub("[[:punct:]]", " ", culture_positive$pros)  # Remove punctuation
+culture_positive$pros <- gsub("[0-9]", " ", culture_positive$pros)  # Remove numbers
+culture_positive$pros <- replace_non_ascii(culture_positive$pros)  # Remove non-ASCII characters
+
+# Culture Negative
+culture_negative$cons <- tolower(culture_negative$cons)
+culture_negative$cons <- gsub("[[:punct:]]", " ", culture_negative$cons)  # Remove punctuation
+culture_negative$cons <- gsub("[0-9]", " ", culture_negative$cons)  # Remove numbers
+culture_negative$cons <- replace_non_ascii(culture_negative$cons)  # Remove non-ASCII charact
+```
+
+Removing stop words in both datasets
+```{r}
+# Culture Positive
+# Use the stop_words dataset from the tidytext package
+data(stop_words)
+
+tidy_text_positive <- culture_positive %>%
+  unnest_tokens(word, pros) %>% # Tokenize the text column into individual words (one word per row)
+  anti_join(stop_words, join_by(word))# Remove stopwords by joining with a predefined list of stopwords
+                                      # The `join_by(word)` ensures only words in the stopword list are filtered out
+
+culture_positive <- tidy_text_positive %>%
+  group_by(`Index`) %>%  # Group by review
+  summarise(# Aggregate the tokenized words back into a single string, separated by spaces
+    cleaned_text = paste(word, collapse = " "), # Collapse tokens into a single text string
+    .groups = "drop"                            # Ensure the result is ungrouped after summarization
+  ) %>%
+  left_join(culture_positive, by = "Index") # Join the cleaned text back to the original data_clean dataset
+```
+
+```{r}
+# Culture Negative
+# Use the stop_words dataset from the tidytext package
+data(stop_words)
+
+tidy_text_negative <- culture_negative %>%
+  unnest_tokens(word, cons) %>% # Tokenize the text column into individual words (one word per row)
+  anti_join(stop_words, join_by(word))# Remove stopwords by joining with a predefined list of stopwords
+                                      # The `join_by(word)` ensures only words in the stopword list are filtered out
+
+culture_negative <- tidy_text_negative %>%
+  group_by(`Index`) %>%  # Group by review
+  summarise(# Aggregate the tokenized words back into a single string, separated by spaces
+    cleaned_text = paste(word, collapse = " "), # Collapse tokens into a single text string
+    .groups = "drop"                            # Ensure the result is ungrouped after summarization
+  ) %>%
+  left_join(culture_negative, by = "Index") # Join the cleaned text back to the original data_clean dataset
+```
+
+
+Removing extra white spaces in both datasets
+
+```{r}
+## Culture Positive
+culture_positive$cleaned_text <- gsub("\\s+", " ", culture_positive$cleaned_text)  # Replace multiple spaces with a single space
+culture_positive$cleaned_text <- trimws(culture_positive$cleaned_text)  # Trim leading and trailing white spaces
+
+## Culture Negative
+culture_negative$cleaned_text <- gsub("\\s+", " ", culture_negative$cleaned_text)  # Replace multiple spaces with a single space
+culture_negative$cleaned_text <- trimws(culture_negative$cleaned_text)  # Trim leading and trailing white spaces
+```
+
+Performing Lemmatization to enhance contextual understanding
+
+```{r}
+# Culture Positive
+# Apply lemmatization to the preprocessed text
+culture_positive$lemmatized_text <- sapply(culture_positive$cleaned_text, function(x) lemmatize_strings(x))
+
+# Culture Negative
+culture_negative$lemmatized_text <- sapply(culture_negative$cleaned_text, function(x) lemmatize_strings(x))
+```
+
+### Exploratory Data Analysis
+
+After data preprocessing, I conducted exploratory data analysis.
+
+Distribution of the sentiment
+```{r}
+dim(culture_positive)
+dim(culture_negative)
+```
+
+We can see that the number of positive reviews is about **3.3 times** the number of negative ones. But both of the sentiments have sufficient data for analysis.
+
+Let's check the **word frequency per sentiment**:
+```{r}
+## Culture Positive
+# Unnest tokens to split the text into words
+word_freq_cult_positive <- culture_positive %>%
+  unnest_tokens(word, lemmatized_text) %>%
+  count(word, sort = TRUE)
+
+word_freq_cult_positive  %>%
+  top_n(10) %>%
+  ggplot(aes(x = reorder(word, n), y = n)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Top 10 Most Frequent Words in Positive Sentiment", x = "Words", y = "Frequency")
+```
+
+The graph shows that words like **pay, benefit, environment** and **culture** appear frequently in **positive** reviews.
+
+Now let's check the word frequency in **negative** reviews.
+```{r}
+## Culture Negative
+# Unnest tokens to split the text into words
+word_freq_cult_negative <- culture_negative %>%
+  unnest_tokens(word, lemmatized_text) %>%
+  count(word, sort = TRUE)
+
+word_freq_cult_negative  %>%
+  top_n(10) %>%
+  ggplot(aes(x = reorder(word, n), y = n)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Top 10 Most Frequent Words in Negative Sentiment", x = "Words", y = "Frequency")
+```
+Based on the graph the common words in negative reviews are **management, manager, hour** and **time**.
+
+
+Let's use word cloud to have a good looking visualization.
+```{r}
+# Positive Word Cloud
+word_freq_cult_positive %>%  
+  with(wordcloud(words = word, 
+                 freq = n, 
+                 min.freq = 10, 
+                 max.words = 20, 
+                 random.order = FALSE, 
+                 colors = brewer.pal(8, "Dark2")))
+title("Word Cloud for Positive Sentiment")
+```
+
+```{r}
+# Negative Word Cloud
+word_freq_cult_negative %>%  
+  with(wordcloud(words = word, 
+                 freq = n, 
+                 min.freq = 10, 
+                 max.words = 20, 
+                 random.order = FALSE, 
+                 colors = brewer.pal(8, "Dark2")))
+title("Word Cloud for Negative Sentiment")
+
+```
+
+The results from 2 sentiments are different, but it does not give much of an insight.
+I will calculate **TF-IDF score** to extract more meaningful details.
+
+### **Data Analysis**
+I started off by label the **pros** as **Positive** and **cons** as **Negative**
+```{r}
+culture_positive <- culture_positive |>
+  mutate(label = "Positive")
+
+culture_negative <- culture_negative |>
+  mutate(label = "Negative")
+
+# 合併 culture_positive 和 culture_negative
+culture_total <- bind_rows(culture_positive, culture_negative)
+
+```
+
+Then I perform tokenization for both of the sentiment and **calculate TF-IDF score**.
+```{r}
+## Culture Positive
+# Tokenize the lemmatized text and count word frequencies by document
+word_count <- culture_total %>%
+  unnest_tokens(word, lemmatized_text) %>%
+  count(label,word, sort = TRUE)
+
+# Calculate TF-IDF
+tf_idf <- word_count %>%
+  bind_tf_idf(word, label, n)
+
+# Preview the TF-IDF scores
+head(tf_idf)
+```
+
+I visualize the **top 20 words in both positive and negative sentiment**.
+```{r}
+# Get the top 20 words per sentiment based on TF-IDF scores
+tf_idf_top_words <- tf_idf %>%
+  group_by(label) %>%
+  arrange(desc(tf_idf)) %>%
+  slice_head(n = 20) %>%  # Select top 20 words
+  ungroup()
+
+# Reorder words within each sentiment for plotting
+tf_idf_top_words <- tf_idf_top_words %>%
+  mutate(word = reorder_within(word, tf_idf, label))
+
+# Plot the top words per sentiment category
+ggplot(tf_idf_top_words, aes(tf_idf, word, fill = label)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ label, scales = "free") +
+  scale_y_reordered() +
+  labs(title = "Top Words by TF-IDF Score per Sentiment for Cultre & Values",
+       x = "TF-IDF Score",
+       y = NULL)
+
+```
+
+### **Results**
+
+We can see that in the **negative** part, a number of employees feel there is a **lack of equity** and inclusiveness due to issues like **favoritism**. Additionally, some perceive the **workload as excessive** while the work is **unorganized** and **unattainable**, leading to frustration. Words like **rude**, **lie** and **unfair** suggest a **toxic work culture**.
+
+On the other hand, in the **positive** part, Amazon does a great job in **creating an innovative environment** that promotes **diversity** in ideas and culture. Employees feel **motivated** and appreciate the **growth** opportunities that help them explore and develop their potential.
+
+
+
+## **Conclusion & Suggestion**
+
+In this project, we want to solve the problem and help Amazon **identify rooms for improvement in order to retain their employees**. To do that, we conducted **Linear Regression analysis** to identify that **Culture & Values** is the category that Amazon should prioritize in improving.
+
+And within Culture & Values, we were able to extract keywords and found out that although **Amazon is an innovative company that supports employees' growth**, but the environment is somewhat **toxic, unorganized and even lack of equity**.
+
+Thus, I suggest that Amazon should **maintain the work environment to be innovative and diverse while supporting the employees to make progress**.
+
+However, Amazon should definitely **improve their environment to boast fairness and inclusivity** by providing **DEI programs** such as **mentor** and **change of advancement practices**. Also, the company need to work on their **workload management** by **analyzing and optimizing their working processes**. As for the **toxic environment**, Amazon should consider providing a **leadership program or conflict solving training** to help build trust and respect within the organization.
